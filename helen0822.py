@@ -1,0 +1,792 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May 16 12:07:14 2024
+
+@author: helen
+"""
+
+import networkx as nx
+from collections import deque
+import gravis as gv # For the cool graphs
+import numpy as np
+import pandas as pd
+import string
+import itertools
+
+gv_defaults = dict( #From Jacky's utils:
+    show_edge_label=True,
+    edge_label_data_source="attr",
+    edge_curvature=0.3,
+    
+    use_links_force=True,
+    links_force_distance=30,
+    links_force_strength=0.05,
+    
+    use_collision_force=True,
+    collision_force_radius=50,
+    collision_force_strength=.7,
+    
+    use_y_positioning_force=True,
+    y_positioning_force_strength=0.1
+)
+
+def create_graph(transactions_df):
+    """
+    Creates a (multi) directed graph from a pandas DataFrame of transactions.
+
+    Args:
+    transactions_df (pd.DataFrame): pandas DataFrame containing transaction data.
+
+    Returns:
+    G (networkx.MultiDiGraph): Multi Directed graph with transactions as edges.
+    """
+    G = nx.MultiDiGraph()
+
+    # Assuming 'from', 'to', 'symbol', and 'value' are column names
+    for _, row in transactions_df.iterrows():
+        u = row['from']
+        v = row['to']
+        token = row['symbol']
+        value = row['value']
+        G.add_edge(u, v, token=token, value=value)
+
+    return G
+
+def draw_base_graph(df: pd.DataFrame, source_node):
+    # Adapted from Jacky's!
+    # Returns a graph and a figure object
+
+    # Create a graph from the DataFrame
+    G = nx.from_pandas_edgelist(
+        df, 
+        source="from", 
+        target="to", 
+        edge_attr=["symbol", "value"], 
+    )
+
+    # Set the color of the source node
+    G.nodes[source_node]["color"] = "red"
+    
+    # Set edge colors based on the 'symbol' attribute
+    for edge_id in G.edges:
+        edge_data = G.edges[edge_id]
+        if edge_data["symbol"] == "WETH":
+            G.edges[edge_id]["color"] = "red"
+
+    #edge_data["label"] = f"{edge_data['symbol']} ({edge_data['value']})"
+
+    gv_defaults = {
+    #"edge_label_attr": "label",
+    }
+
+    fig = gv.d3(G, **gv_defaults)
+
+    #for edge_id in G.edges:
+    #    fig.add_edge_label(edge_id, G.edges[edge_id]["label"]) # this did not work - check how Jacky did it
+    
+    return G, fig
+
+def draw_base_graph_two(df: pd.DataFrame, source_node):
+    G = nx.from_pandas_edgelist(
+        df, 
+        source="from", 
+        target="to", 
+        edge_attr=["symbol", "value"]
+    )
+
+    G.nodes[source_node]["color"] = "red"
+    
+    for edge_id in G.edges:
+        edge_data = G.edges[edge_id]
+        if edge_data["symbol"] == "WETH":
+            G.edges[edge_id]["color"] = "red"
+        
+        # Different from draw_base_graph:
+        G.edges[edge_id]["label"] = f"{edge_data['symbol']} ({edge_data['value']})"
+
+    # Different from draw_base_graph:
+    gv_defaults = {
+        "edge_label_attr": "label",
+    }
+
+    fig = gv.d3(G, **gv_defaults)
+
+    return G, fig
+
+def draw_base_graph_four(df: pd.DataFrame, source_node, create_using=nx.MultiDiGraph):
+    # Print column names for debugging
+    # print("DataFrame columns:", df.columns)
+    
+    # Check for existence of required columns
+    required_columns = ["from", "to", "symbol", "value"]
+    for col in required_columns:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
+    
+    # Because of the warning "SettingWithCopyWarning: A value is trying to be set on a copy of a slice from a DataFrame.""
+    df = df.copy()
+
+    # This two following lines are from Jacky's:
+    df["value_str"] = df["value"].apply('{:20,.4f}'.format).astype(str)
+    df["attr"] = df["symbol"].astype(str) + "-" + df["value_str"]
+        
+    G = nx.MultiDiGraph() # Just to 420% garantee it is a nx.MultDiGraph
+
+    G = nx.from_pandas_edgelist(
+        df, 
+        source="from", target="to", 
+        edge_attr=["symbol", "value", "attr"],  # Updated edge_attr to only include existing columns
+        create_using=create_using
+    )
+
+    G.nodes[source_node]["color"] = "red"
+    
+    # gv_defaults reads attr?
+    for edge_id in G.edges:
+        if G.edges[edge_id].get("symbol") == "WETH" or G.edges[edge_id].get("symbol") == "ETH": # if G.edges[edge_id].get("symbol") in ["WETH", "ETH"]:
+            G.edges[edge_id]["color"] = "red"
+
+    # Trying to add labels to the edges:
+    edge_labels = {}
+    for u, v, key in G.edges(keys=True):
+        edge_labels[(u, v, key)] = f"{G.edges[u, v, key].get('symbol')} ({G.edges[u, v, key].get('value')})"
+    
+    pos = nx.spring_layout(G, seed=42)  # random layout and seed for reproducibility
+    # nx.draw_networkx_edge_labels(
+    #     G, pos #layout 
+    #     edge_labels=edge_labels,
+    #     font_color='red', 
+    #     font_size=10
+    # )
+    fig = gv.d3(
+        G, 
+        **gv_defaults,
+        #edge_label=edge_labels,  # Can gv.d3 use edge labels? NO! :/
+    )
+
+    return G, fig
+
+def hashes_to_letters(chosen_group, source_node):
+    # Modified from Jacky's
+
+    # Flatten and get unique hash values
+    hashes = chosen_group[["from", "to"]].values.flatten()
+    _, idx = np.unique(hashes, return_index=True)
+
+    # Generate more unique names if needed
+    letters = list(string.ascii_letters)
+    if len(hashes[idx]) > len(letters):
+        letters.extend([''.join(i) for i in itertools.product(string.ascii_letters, repeat=2)])
+
+    # Map hashes to letters
+    renaming_dict = dict(
+        zip(
+            hashes[idx], 
+            letters[:len(hashes[idx])]
+        )
+    )
+
+    SOURCE = renaming_dict[source_node]
+
+    # Rename using .loc to avoid SettingWithCopyWarning
+    chosen_group.loc[:, "from"] = chosen_group["from"].map(renaming_dict)
+    chosen_group.loc[:, "to"] = chosen_group["to"].map(renaming_dict)
+
+    return chosen_group, SOURCE
+
+def count_connected_components(G, mode='weak'):
+    """
+    Counts the number of connected components in a MultiDiGraph.
+
+    Args:
+    G (nx.MultiDiGraph): The directed graph.
+    mode (str): 'weak' for weakly connected components, 'strong' for strongly connected components.
+    
+    Returns:
+    int: The number of connected components.
+    """
+    if mode == 'weak':
+        # Convert to undirected graph and count weakly connected components
+        return nx.number_connected_components(G.to_undirected())
+    elif mode == 'strong':
+        # Count strongly connected components
+        return nx.number_strongly_connected_components(G)
+    else:
+        raise ValueError("Mode should be either 'weak' or 'strong'")
+
+def check_node_type(G, node):
+    """
+    Checks if the node is a source or a sink in the graph.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    node (str): Node to check.
+
+    Returns:
+    str: "source" if the node is a source, "sink" if the node is a sink,
+         "neither" if the node is neither.
+    """
+    if G.in_degree(node) == 0:
+        return "source"
+    elif G.out_degree(node) == 0:
+        return "sink"
+    else:
+        return "neither"
+    
+def check_flow_conservation_node(G, node):
+    """
+    Checks if the node is a flow conservation node.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    node (str): Node to check.
+
+    Returns:
+    bool: True if the node is a flow conservation node, False otherwise.
+    """
+    node_type = check_node_type(G, node)
+    if node_type == "source" or node_type == "sink":
+        return False
+    
+    incoming_edges = G.in_edges(node, data=True)
+    outgoing_edges = G.out_edges(node, data=True)
+    
+    token_flow = {}
+
+    for u, v, data in incoming_edges:
+        token = data['symbol'] #troquei token por symbol dentro dos []
+        value = data['value']
+        if token not in token_flow:
+            token_flow[token] = {'in': 0, 'out': 0}
+        token_flow[token]['in'] += value
+
+    for u, v, data in outgoing_edges:
+        token = data['symbol'] #troquei token por symbol dentro dos []
+        value = data['value']
+        if token not in token_flow:
+            token_flow[token] = {'in': 0, 'out': 0}
+        token_flow[token]['out'] += value
+    
+#    print(token_flow.items())
+    for token, flows in token_flow.items():  
+        if (flows['in'] == 0) or (flows['out'] == 0):
+            return False
+        if abs(flows['in'] - flows['out']) > 0.001:
+            return False
+
+    return True
+
+def split_flow_conservation_node(G, N):
+    """
+    Splits a flow conservation node into multiple nodes based on token types.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    node (str): Node to split.
+
+    Returns:
+    None
+    """ 
+    
+    incoming_edges = G.in_edges(N, data=True)
+    outgoing_edges = G.out_edges(N, data=True)
+    
+    # Get the types of edges connected to N
+    type_list = set()
+    for u, v, data in incoming_edges:
+        edge_type = data.get('token')
+        type_list.add(edge_type)
+    # Since this is a flow-conservation node, 
+    # we don't need this extra step:
+    for u, v, data in outgoing_edges:
+        edge_type = data.get('token')  
+        type_list.add(edge_type)
+    #print(type_list)
+    
+    # Create new nodes based on the types of edges
+    new_nodes = {edge_type: f"{N}_{edge_type}" for edge_type in type_list}
+    for new_node in new_nodes.values():
+        G.add_node(new_node)
+    
+    # Redirect edges to the new nodes
+    edges_to_add = []
+    edges_to_remove = []
+    for u, v, data in list(G.edges(data=True)):
+        edge_type = data.get('token')
+        new_node = new_nodes.get(edge_type)
+        if u == N:
+            edges_to_add.append((new_node, v, data))
+            edges_to_remove.append((u, v))
+        elif v == N:
+            edges_to_add.append((u, new_node, data))
+            edges_to_remove.append((u, v))
+
+    # Add new edges
+    for edge in edges_to_add:
+        G.add_edge(edge[0], edge[1], **edge[2])
+        #edge[2] is a dict, the double star is so to unpack it.
+
+    # Remove old edges
+    for edge in edges_to_remove:
+        G.remove_edge(edge[0], edge[1])
+
+    # Remove the old node
+    G.remove_node(N)
+    
+    return G
+
+def add_dummy_node_if_needed(G, initiator):
+    """
+    Adds a dummy node D to the graph if the initiator node is neither a source nor a sink.
+    Replaces all incoming edges to the initiator node with edges to the dummy node.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    initiator (str): Initiator node.
+
+    Returns:
+    None
+    """
+    if G.in_degree(initiator) > 0 and G.out_degree(initiator) > 0:
+        dummy_node = 'Dummy'
+        
+        # Add dummy node to the graph
+        G.add_node(dummy_node)
+
+        # Get all incoming edges to the initiator
+        incoming_edges = list(G.in_edges(initiator, data=True))
+
+        # Redirect incoming edges to the dummy node
+        for u, _, data in incoming_edges:
+            G.add_edge(u, dummy_node, **data)
+            G.remove_edge(u, initiator)
+
+        return G
+
+def find_arc_cut(G, start):
+    """
+    Applies Algorithm A to find an arc cut consisting of WETH arcs that separates sources from sinks.
+    
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    start (str): The starting node (source).
+    
+    Returns:
+    str: 'traceable' if there is no path from source to sink without WETH arcs,
+         'not traceable' if there is such a path.
+    set: Set S of marked nodes if the graph is traceable, otherwise None.
+    set: Set T which is the complement of S containing nodes not marked, otherwise None.
+    """
+    # Initialize the queue and the set of marked nodes
+    Q = deque()
+    marked = set()
+    
+    # Add each source w to Q and mark w
+    for node in G.nodes:
+        if G.in_degree(node) == 0:  # Nodes with no incoming edges
+            Q.append(node)
+            marked.add(node)
+
+    print(f"marked nodes:", marked)
+    
+    while Q:
+        u = Q.popleft()
+        for v in G.successors(u):
+            # Check all edges between u and v
+            for key, data in G[u][v].items():
+                if data['symbol'] != 'WETH' and data['symbol'] != 'ETH' and data['value'] > 0 and v not in marked:
+                    print(f"This is v that will mark next:", v)
+                    Q.append(v)
+                    marked.add(v)
+                    break  # No need to check other edges between u and v once v is marked
+    
+    # Check if there is any sink marked
+    for node in G.nodes:
+        if G.out_degree(node) == 0 and node in marked:  # Sink node
+            #print(f"This sink was marked:", node)
+            return 'not traceable', None, None
+    
+    # Create the set T as the complement of marked nodes
+    Set_T = set(G.nodes) - marked
+    
+    return 'traceable', marked, Set_T
+
+def sum_weth_arcs(G, marked_nodes, unmarked_nodes):
+    """
+    Sums the values of all WETH arcs from the marked nodes to the unmarked nodes.
+    
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    marked_nodes (set): Set of marked nodes.
+    unmarked_nodes (set): Set of unmarked nodes.
+    
+    Returns:
+    int: Sum of the values of WETH arcs.
+    """
+    total_value = 0
+    
+    for u in marked_nodes:
+        for v in G.successors(u):
+            if v in unmarked_nodes:
+                for key, data in G[u][v].items():
+                    if data['symbol'] == 'WETH' or data['symbol'] == 'ETH':
+                        total_value += data['value']
+    
+    return total_value
+
+def check_bifurcation_node(G, node):
+    """
+    Checks if the node is a bifurcation node.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    node (str): Node to check.
+
+    Returns:
+    bool: True if the node is a bifurcation node, False otherwise.
+    """
+    node_type = check_node_type(G, node)
+    if node_type == "source" or node_type == "sink":
+        return False
+    
+    if check_flow_conservation_node(G, node):
+        return False
+        
+    incoming_edges = G.in_edges(node, data=True)
+    outgoing_edges = G.out_edges(node, data=True)
+    
+    tokens_in = set()
+    tokens_out = set()
+    
+    for _, _, data in incoming_edges:
+        token = data['symbol'] #troquei token por symbol dentro dos []
+        tokens_in.add(token)
+            
+    for _, _, data in outgoing_edges:
+        token = data['symbol'] #troquei token por symbol dentro dos []
+        tokens_out.add(token)
+    
+    if not tokens_in.intersection(tokens_out):
+#        print('This is a bifurcation node: ', node)
+        return True
+    else:
+#        print('This is NOT bifurcation node: ',node)
+        return False
+
+def check_uncategorized_node(G, node):
+    """
+    Checks if the node is an uncategorized node.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    node (str): Node to check.
+
+    Returns:
+    bool: True if the node is an uncategorized node, False otherwise.
+    """
+    
+    node_type = check_node_type(G, node)
+    if node_type == "source" or node_type == "sink":
+#        print('This is a source or a sink node: ',node)
+        return False
+    
+    if check_flow_conservation_node(G, node):
+#        print('This is a flow conservation node: ', node)
+        return False
+    
+    if check_bifurcation_node(G, node):
+#        print("This is a bifurcation node: ", node)
+        return False
+    
+#    print("This is an uncategorized node: ", node)
+    return True
+
+def check_transaction_has_uncategorized_node(G):
+    """
+    Checks if the transaction contains an uncategorized node
+    (an uncategorized node is one that is not of type source, sink, flow-conservation or bifurcation)
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+
+    Returns:
+    bool: True if there is a node that is uncategorized, False otherwise.
+    """
+    
+    nodes_to_check = list(G.nodes())
+    for node in nodes_to_check:
+        if check_uncategorized_node(G, node):
+            # print(f'This transaction has an uncategorized node:', node)
+            return True
+    
+    return False
+
+def monochromatic_path_value(G, start):
+
+    """
+    Checks if the transaction contains an monochromatic path 
+    (a path from source to sink where all the arcs are of the same color (token))
+    and if so, update all the values of the arcs in the path
+    (subtract each one of them by valuemin)
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    start (str) : The source node
+
+    Returns:
+    G: The (updated) graph
+    """
+    # Initialize the queue and mark the source
+    Q = deque()
+    Q.append(start)
+    marked = {start: True}
+    predecessor = {}
+    color = None #color is the Token
+
+    # Breadth-First Search (BFS)
+    while Q:
+        u = Q.popleft()
+        for _, v, data in G.edges(u, data=True):
+            if data['value'] > 0:
+                if color is None:
+                    color = data.get('symbol')
+                if data.get('symbol') == color and v not in marked: # troquei token por symbol dentro dos []
+                #if data.get('symbol') == color and data['value'] != 0 and v not in marked: # troquei token por symbol dentro dos []
+                    print("the color is", color)
+                    Q.append(v)
+                    print("I marked this node: ", v)
+                    marked[v] = True
+                    predecessor[v] = u
+            else:
+                print("vou continuar")
+                continue
+
+    # Find the sink node, which is the last marked node in BFS
+    sink = None
+    for node in marked:
+        if node != start and len(G.out_edges(node)) == 0:
+            sink = node
+            print("This is the sink", sink)
+            break
+
+    # If we found a sink, let us calculate the valuemin of the path:
+    if sink:
+        valuemin = float('inf')
+        v = sink
+        while v != start:
+            u = predecessor[v]
+            for key, edge_data in G[u][v].items():
+                if edge_data['symbol'] == color: # troquei token por symbol dentro dos []
+                    valuemin = min(valuemin, edge_data['value'])
+            v = u
+
+        # Decrease the value of the arcs by valuemin
+        v = sink
+        while v != start:
+            u = predecessor[v]
+            for key, edge_data in G[u][v].items():
+                if edge_data['symbol'] == color: # troquei token por symbol dentro dos []
+                    G[u][v][key]['value'] -= valuemin
+                    #G[u][v][0]['value'] -= valuemin
+            v = u
+        
+        # print('There is a monochromatic path in this graph')
+        # print('The color (token) of this monochromatic path is', color)
+        # print('The sink in this monochromatic path is the node', sink)
+        # print("The value of the monochromatic path is", valuemin)
+        return G
+    else:#if there is not a marked sink
+        # print('There is no monochromatic path in this graph.')
+        return G
+
+
+
+def monochromatic_path_value_new(G, start):
+
+    """
+    Checks if the graph contains a monochromatic path (a path from source to a sink 
+    where all the arcs are of the same color (token)) and if so, updates all the 
+    values of the arcs in the path (subtract each one of them by valuemin). 
+    Repeats until no more monochromatic paths are found.
+
+    Args:
+    G (networkx.MultiDiGraph): Multi Directed graph.
+    start (str): The source node.
+
+    Returns:
+    G: The (updated) graph. (networkx.MultiDiGraph)
+    """
+    def find_monochromatic_path(G, start): 
+    # it finds a single monochromatic path
+
+        # Initialize the queue and mark the source
+        Q = deque()
+        Q.append(start)
+        marked = {start: True}
+        predecessor = {}
+        color = None #color is the Token
+
+        # Breadth-First Search (BFS)
+        while Q:
+            u = Q.popleft()
+            for _, v, data in G.edges(u, data=True):
+                print("This is the node I am at:", v)
+                if data['value'] > 0:# I changed this around
+                    if color is None:
+                        color = data.get('symbol')
+                        print("This is the first color:", color)
+                        print("This is the value:", data['value'])
+                    #if data.get('symbol') == color and data['value'] != 0 and v not in marked:
+                    if data.get('symbol') == color and v not in marked: # troquei token por symbol dentro dos []
+                        Q.append(v)
+                        marked[v] = True
+                        print("I just marked this node:", v)
+                        predecessor[v] = u
+
+        # Find the sink node, which is the last marked node in BFS
+        sink = None
+        for node in marked:
+            print("The following node is marked:", node)
+            if node != start and len(G.out_edges(node)) == 0:
+                sink = node
+                break
+
+        # If we found a sink, let us calculate the valuemin of the path:
+        if sink:
+            valuemin = float('inf')
+            v = sink
+            while v != start:
+                u = predecessor[v]
+                for key, edge_data in G[u][v].items():
+                    if edge_data['symbol'] == color: # troquei token por symbol dentro dos []
+                        valuemin = min(valuemin, edge_data['value'])
+                v = u
+
+
+        # Return the path information
+            return predecessor, color, valuemin
+        else:
+            return None, None, None
+        
+    while True:
+        predecessor, color, valuemin = find_monochromatic_path(G, start)
+        
+        if color is None:
+            break  # No more monochromatic paths found, hooray!
+
+        # Decrease the value of the arcs by valuemin - modified
+        v = start 
+        while v: 
+            u = predecessor.get(v)
+            if u is None:
+                break
+            for key, edge_data in G[u][v].items():
+                if edge_data['symbol'] == color:
+                    G[u][v][key]['value'] -= valuemin
+                    if G[u][v][key]['value'] <= 0:
+                        G[u][v].remove(key)
+            v = u
+
+        print('Processed a monochromatic path.')
+        print('The color (token) of this path is', color)
+        print('The minimum value in this path is', valuemin)
+
+    print('No more monochromatic paths found.')
+        
+    return G
+
+def find_source_node(df):
+    
+    result = df[(df["source"] == "main")]["from"]
+    
+    # Check if there is at least one match
+    if not result.empty:
+        return result.iloc[0]  # Return the first match
+    else:
+        return None  # Or handle this case as needed
+
+def graph_to_dataframe(G):
+    """
+    Receives a nx.MultiDiGraph and returns a pd.DataFrame with columns 'to', 'from', 'value', and 'symbol'.
+    """
+    
+    edges = []
+    for u, v, key, data in G.edges(data=True, keys=True):
+        edge_info = {
+            'from': u,
+            'to': v,
+            'value': data.get('value', None),
+            'symbol': data.get('symbol', None),
+            'key': key
+        }
+        edges.append(edge_info)
+    
+    
+    df = pd.DataFrame(edges, columns=['from', 'to', 'value', 'symbol', 'key'])
+    
+    return df
+
+def main(chosen_graph_df):
+    
+    # Step 1: Create graph and identify source_node:
+     source_node = find_source_node(chosen_graph_df)
+     graph, fig = draw_base_graph_four(chosen_graph_df, source_node, create_using=nx.MultiDiGraph)
+    #  print("Original Graph:")
+    #  #print(graph.edges(data=True))
+    #  num_nodes = graph.number_of_nodes()
+    #  num_edges = graph.number_of_edges()
+    #  print(f"Number of nodes: {num_nodes}")
+    #  print(f"Number of edges (arrows): {num_edges}")
+
+    # Step 2: Add dummy node if needed:
+     add_dummy_node_if_needed(graph, source_node)
+    # print("Graph with a dummy node:")
+    #  #print(graph.edges(data=True))
+    #  num_nodes = graph.number_of_nodes()
+    #  num_edges = graph.number_of_edges()
+    #  print(f"Number of nodes: {num_nodes}")
+    #  print(f"Number of edges (arrows): {num_edges}")
+
+    # Step 3: Split flow conservation nodes:
+     nodes_to_check = list(graph.nodes())
+     for node in nodes_to_check:
+        if check_flow_conservation_node(graph, node):
+            # print(node)
+            # print(check_flow_conservation_node(graph, node))
+            split_flow_conservation_node(graph, node)   
+    #  print("Graph with flow_conservation_nodes splitted:")
+    # # print(graph.edges(data=True))
+    #  num_nodes = graph.number_of_nodes()
+    #  num_edges = graph.number_of_edges()
+    #  print(f"Number of nodes: {num_nodes}")
+    #  print(f"Number of edges (arrows): {num_edges}")
+
+    # Opitional Step: Investigate node types     
+#     check_bifurcation_node(G, 'h')
+     
+    # Step 4: Deal with monochromatic paths:
+     check_transaction_has_uncategorized_node(graph)
+     monochromatic_path_value(graph, source_node)
+    #  print("Processed Graph:")
+    # # print(graph.edges(data=True))
+    #  num_nodes = graph.number_of_nodes()
+    #  num_edges = graph.number_of_edges()
+    #  print(f"Number of nodes: {num_nodes}")
+    #  print(f"Number of edges (arrows): {num_edges}")
+
+    # Step 5: Find an arc cut
+     status, marked_nodes, unmarked_nodes = find_arc_cut(graph, source_node)
+    # print(f"Status: {status}")
+    # print(f"Marked Nodes (S): {marked_nodes}")
+    # print(f"Complement: {unmarked_nodes}")
+    
+    # Step 6: Sum WETH arcs
+     if marked_nodes is not None and unmarked_nodes is not None:
+        # Apply the sum_weth_arcs function to sum the values of WETH arcs
+        total_weth_value = sum_weth_arcs(graph, marked_nodes, unmarked_nodes)
+        # print(f"Total WETH value: {total_weth_value}")
+        return(total_weth_value)
+     
+     else:
+         #print("untraceable")
+         return None
