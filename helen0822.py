@@ -524,6 +524,8 @@ def check_transaction_has_uncategorized_node(G):
 def monochromatic_path_value(G, start):
 
     """
+    UPDATED 08-28-2024
+
     Checks if the transaction contains an monochromatic path 
     (a path from source to sink where all the arcs are of the same color (token))
     and if so, update all the values of the arcs in the path
@@ -599,22 +601,94 @@ def monochromatic_path_value(G, start):
         # print('There is no monochromatic path in this graph.')
         return G
 
+def find_all_monochromatic_paths(G, start):
+    """
+    WORK IN PROGRESS
+    """
 
+    # Get all edges starting from the node `start`
+    edges_from_start = G.edges(start, data=True)
+    color_Qs = {}  # Dictionary to store queues for each color, for BFS
+
+    # Initialize queues for each color
+    for _, v, data in edges_from_start:
+        color = data.get('symbol')  # Get the color (symbol) of the edge
+        if color not in color_Qs:
+            color_Qs[color] = deque()  # Create a new deque for this color if it doesn't exist
+        color_Qs[color].append(v)  # Add the target node `v` to the deque for this color
+
+    monochromatic_paths = {}  # Dictionary to store the paths for each color
+
+    print(f"Source: {start}")
+
+    print(f"All colors: {list(color_Qs.keys())}")
+
+    # Process each color
+    for color, Q in color_Qs.items():
+        print(f"First color: {color}")
+        marked = {start} | set(Q)  # Initialize the set of marked nodes with `start` and nodes in Q
+        sinks = set()  # Set to store sink nodes
+        predecessor = {x:start for x in Q}  # Dictionary to store the predecessor of each node
+
+        # Breadth-First Search (BFS)
+        while Q:
+            u = Q.popleft()  # Get the next node from the queue
+            edges_from_u = G.edges(u, data=True)  # Get all edges starting from `u`
+
+            # If `u` has no outgoing edges and is not the start node, it's a sink
+            if not edges_from_u and u != start:
+                print(f"  First sink: {u}")
+                sinks.add(u)
+
+            # Process each edge starting from `u`
+            for _, v, data in edges_from_u:
+                if data['value'] > 0:  # Check if the edge has a positive value
+                    if data.get('symbol') == color and v not in marked:  # Check if the edge has the correct color
+                        Q.append(v)  # Add the target node `v` to the queue
+                        marked.add(v)  # Mark `v` as visited
+                        predecessor[v] = u  # Set `u` as the predecessor of `v`
+                        print(f"   An edge: {v} to {u}")
+                else:
+                    print(f"    The value is 0, ABORT!")
+
+        print(f"All sinks for {color}: {list(sinks)}.")
+
+        # return None
+        paths_min_value = {}  # Dictionary to store the minimum value for each sink
+
+        # Calculate the minimum path value for each sink
+        for sink in sinks:
+            min_value = float('inf')
+            v = sink
+            print(f"From {v}, we get...")
+
+            # Trace back from the sink to the start to find the path
+            while v != start:
+                try: 
+                    u = predecessor[v]
+                    print(f"came from {u}")
+                    # There can be multiple edges from `u` to `v`, check all of them
+                    for edge, edge_data in G[u][v].items():
+                        if edge_data['symbol'] == color:  # Check if the edge has the correct color
+                            min_value = min(min_value, edge_data['value'])  # Update the minimum value
+                    v = u  # Move to the predecessor
+                except:
+                    print("strange error")
+
+            paths_min_value[sink] = min_value  # Store the minimum value for this sink
+
+        # Store the paths and minimum values for this color in `monochromatic_paths`
+        monochromatic_paths[color] = {
+            'predecessor': predecessor,
+            'paths_min_value': paths_min_value
+        }
+    
+    return monochromatic_paths  # Return the dictionary of monochromatic paths
 
 def monochromatic_path_value_new(G, start):
 
     """
-    Checks if the graph contains a monochromatic path (a path from source to a sink 
-    where all the arcs are of the same color (token)) and if so, updates all the 
-    values of the arcs in the path (subtract each one of them by valuemin). 
-    Repeats until no more monochromatic paths are found.
-
-    Args:
-    G (networkx.MultiDiGraph): Multi Directed graph.
-    start (str): The source node.
-
-    Returns:
-    G: The (updated) graph. (networkx.MultiDiGraph)
+    DO NOT USE - WORK IN PROGRESS
     """
     def find_monochromatic_path(G, start): 
     # it finds a single monochromatic path
