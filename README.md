@@ -1,1 +1,1 @@
-Tracing Transactions on the Ethereum Platform.
+Transaction Tracing on the Ethereum Platform.
